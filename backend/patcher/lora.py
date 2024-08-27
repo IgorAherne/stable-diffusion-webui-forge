@@ -346,6 +346,8 @@ class LoraLoader:
 
         # Patch
 
+        memory_management.signal_empty_cache = True
+
         for key, current_patches in (tqdm(self.patches.items(), desc=f'Patching LoRAs for {type(self.model).__name__}') if len(self.patches) > 0 else self.patches):
             try:
                 parent_layer, child_key, weight = utils.get_attr_with_parent(self.model, key)
@@ -419,12 +421,15 @@ class LoraLoader:
             if gguf_cls is not None:
                 from backend.operations_gguf import ParameterGGUF
                 weight = gguf_cls.quantize_pytorch(weight, gguf_real_shape)
-                utils.set_attr_raw(self.model, key, ParameterGGUF.make(
+                weight = ParameterGGUF.make(
                     data=weight,
                     gguf_type=gguf_type,
                     gguf_cls=gguf_cls,
-                    gguf_real_shape=gguf_real_shape
-                ))
+                    gguf_real_shape=gguf_real_shape,
+                    parent=parent_layer
+                )
+                gguf_cls.bake_layer(parent_layer, weight, gguf_cls.computation_dtype)
+                utils.set_attr_raw(self.model, key, weight)
                 continue
 
             utils.set_attr_raw(self.model, key, torch.nn.Parameter(weight, requires_grad=False))

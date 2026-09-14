@@ -432,7 +432,11 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
             load_state_dict(model, state_dict)
             # model = post_func(model)
 
-            model.config = unet_config
+            if hasattr(model, "_internal_dict"):
+                model._internal_dict = unet_config
+            else:
+                model.config = unet_config
+
             model.storage_dtype = storage_dtype
             model.computation_dtype = computation_dtype
             model.load_device = load_device

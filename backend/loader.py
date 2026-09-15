@@ -315,7 +315,7 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
             if cls_name == "UNet2DConditionModel":
                 from backend.nn.unet import IntegratedUNet2DConditionModel
 
-                model_loader = lambda c: IntegratedUNet2DConditionModel.from_config(c)
+                model_loader = lambda c: IntegratedUNet2DConditionModel(**c)
             elif cls_name in ["FluxTransformer2DModel", "Flux2Transformer2DModel"]:
                 if guess.nunchaku:
                     from backend.nn.svdq import SVDQFluxTransformer2DModel
@@ -432,11 +432,7 @@ def load_huggingface_component(guess, component_name, lib_name, cls_name, repo_p
             load_state_dict(model, state_dict)
             # model = post_func(model)
 
-            if hasattr(model, "_internal_dict"):
-                model._internal_dict = unet_config
-            else:
-                model.config = unet_config
-
+            model.config = unet_config
             model.storage_dtype = storage_dtype
             model.computation_dtype = computation_dtype
             model.load_device = load_device

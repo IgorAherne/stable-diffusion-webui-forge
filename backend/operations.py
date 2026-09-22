@@ -12,6 +12,7 @@ stash = {}
 
 
 def get_weight_and_bias(layer, weight_args=None, bias_args=None, weight_fn=None, bias_fn=None):
+    scale_weight = getattr(layer, 'scale_weight', None)
     patches = getattr(layer, 'forge_online_loras', None)
     weight_patches, bias_patches = None, None
 
@@ -32,6 +33,8 @@ def get_weight_and_bias(layer, weight_args=None, bias_args=None, weight_fn=None,
             weight = weight_fn(weight)
         if weight_args is not None:
             weight = weight.to(**weight_args)
+        if scale_weight is not None:
+            weight = weight*scale_weight.to(device=weight.device, dtype=weight.dtype)
         if weight_patches is not None:
             weight = merge_lora_to_weight(patches=weight_patches, weight=weight, key="online weight lora", computation_dtype=weight.dtype)
 
@@ -121,10 +124,13 @@ current_bnb_dtype = None
 
 class ForgeOperations:
     class Linear(torch.nn.Module):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, in_features, out_features, *args, **kwargs):
             super().__init__()
+            self.in_features = in_features
+            self.out_features = out_features
             self.dummy = torch.nn.Parameter(torch.empty(1, device=current_device, dtype=current_dtype))
             self.weight = None
+            self.scale_weight = None
             self.bias = None
             self.parameters_manual_cast = current_manual_cast_enabled
 
@@ -132,6 +138,8 @@ class ForgeOperations:
             if hasattr(self, 'dummy'):
                 if prefix + 'weight' in state_dict:
                     self.weight = torch.nn.Parameter(state_dict[prefix + 'weight'].to(self.dummy))
+                if prefix + 'scale_weight' in state_dict:
+                     self.scale_weight = torch.nn.Parameter(state_dict[prefix + 'scale_weight'])                    
                 if prefix + 'bias' in state_dict:
                     self.bias = torch.nn.Parameter(state_dict[prefix + 'bias'].to(self.dummy))
                 del self.dummy
@@ -395,34 +403,27 @@ class ForgeOperationsGGUF(ForgeOperations):
 
         def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
             if hasattr(self, 'dummy'):
+                computation_dtype = self.dummy.dtype
+                if computation_dtype not in [torch.float16, torch.bfloat16]:
+                    # GGUF cast only supports 16bits otherwise super slow
+                    computation_dtype = torch.float16
                 if prefix + 'weight' in state_dict:
                     self.weight = state_dict[prefix + 'weight'].to(device=self.dummy.device)
+                    self.weight.computation_dtype = computation_dtype
                 if prefix + 'bias' in state_dict:
                     self.bias = state_dict[prefix + 'bias'].to(device=self.dummy.device)
+                    self.bias.computation_dtype = computation_dtype
                 del self.dummy
             else:
                 if prefix + 'weight' in state_dict:
                     self.weight = state_dict[prefix + 'weight']
                 if prefix + 'bias' in state_dict:
                     self.bias = state_dict[prefix + 'bias']
-            if self.weight is not None and hasattr(self.weight, 'parent'):
-                self.weight.parent = self
-            if self.bias is not None and hasattr(self.bias, 'parent'):
-                self.bias.parent = self
             return
 
         def _apply(self, fn, recurse=True):
-            if self.weight is not None:
-                self.weight = utils.tensor2parameter(fn(self.weight))
-            if self.bias is not None:
-                self.bias = utils.tensor2parameter(fn(self.bias))
-            for i in range(5):
-                quant_state_name = f'quant_state_{i}'
-                quant_state = getattr(self, quant_state_name, None)
-                if quant_state is not None:
-                    quant_state = fn(quant_state)
-                    quant_state = utils.tensor2parameter(quant_state)
-                    setattr(self, quant_state_name, quant_state)
+            for k, p in self.named_parameters(recurse=False, remove_duplicate=True):
+                setattr(self, k, utils.tensor2parameter(fn(p)))
             return self
 
         def forward(self, x):
